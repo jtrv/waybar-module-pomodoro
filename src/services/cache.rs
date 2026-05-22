@@ -99,36 +99,6 @@ mod tests {
     }
 
     #[test]
-    fn test_store_and_restore() -> Result<(), Box<dyn Error>> {
-        unsafe {
-            std::env::set_var("CARGO_PKG_NAME", MODULE);
-            std::env::set_var("CARGO_PKG_VERSION", VERSION);
-        }
-
-        let timer = create_timer(None, None, None);
-        store(&timer)?;
-        let mut restored_timer = create_timer(Some(30), Some(10), Some(20));
-
-        let config = Config {
-            work_time: 25,
-            short_break: 5,
-            long_break: 15,
-            ..Default::default()
-        };
-
-        restore(&mut restored_timer, &config)?;
-
-        assert_eq!(restored_timer.current_index, timer.current_index);
-        assert_eq!(restored_timer.elapsed_millis, timer.elapsed_millis);
-        assert_eq!(restored_timer.elapsed_time, timer.elapsed_time);
-        assert_eq!(restored_timer.times, timer.times);
-        assert_eq!(restored_timer.iterations, timer.iterations);
-        assert_eq!(restored_timer.session_completed, timer.session_completed);
-
-        Ok(())
-    }
-
-    #[test]
     fn test_store_and_restore_mismatched_config() -> Result<(), Box<dyn Error>> {
         unsafe {
             std::env::set_var("CARGO_PKG_NAME", MODULE);

@@ -5,6 +5,7 @@ use std::{
     path::Path,
     sync::mpsc::{Receiver, Sender},
     thread,
+    time::{Duration, Instant},
 };
 
 use notify_rust::Notification;
@@ -13,7 +14,7 @@ use crate::{
     models::{config::Config, message::Message},
     utils::{
         self,
-        consts::{HOUR, MINUTE, SLEEP_DURATION},
+        consts::{HOUR, MINUTE},
     },
 };
 
@@ -112,46 +113,88 @@ fn handle_client(rx: Receiver<String>, socket_path: String, config: Config) {
         let _ = cache::restore(&mut state, &config);
     }
 
+    let mut last_class: Vec<String> = Vec::new();
+    let mut last_cycle_icon = String::new();
+    let mut last_running = false;
+    let mut next_print = Instant::now();
+    let mut pending_message = false;
+    let mut pending_update = true;
+
     loop {
-        if let Ok(message) = rx.try_recv() {
-            process_message(&mut state, &message);
-        }
+        // Calculate how long to sleep - only tick when we need to
+        let sleep_duration = if state.running {
+            // Sleep until next second tick (but max 1 second)
+            Duration::from_secs(1)
+        } else if pending_message || pending_update {
+            Duration::ZERO
+        } else {
+            // When paused, just wait for a message (no need to wake every second)
+            Duration::from_secs(1)
+        };
 
-        let value = format_time(state.elapsed_time, state.get_current_time());
-        let value_prefix = config.get_play_pause_icon(state.running);
-        let tooltip = format!(
-            "{} pomodoro{} completed this session",
-            state.session_completed,
-            if state.session_completed > 1 || state.session_completed == 0 {
-                "s"
-            } else {
-                ""
+        // Wait for message or timeout
+        match rx.recv_timeout(sleep_duration) {
+            Ok(message) => {
+                process_message(&mut state, &message);
+                pending_message = true;
             }
-        );
-        let class = state.get_class();
-        let cycle_icon = config.get_cycle_icon(state.is_break());
-        state.update_state(&config);
-        println!(
-            "{}",
-            create_message(
-                utils::helper::trim_whitespace(&format!(
-                    "{} {} {}",
-                    value_prefix, value, cycle_icon
-                )),
-                tooltip.as_str(),
-                &class,
-            )
-        );
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
 
-        if state.running {
+        // Only tick if running and enough time has passed
+        if state.running && Instant::now() >= next_print {
             state.increment_time();
+            state.update_state(&config);
+            pending_update = true;
+            next_print = Instant::now() + Duration::from_secs(1);
         }
 
-        if config.persist {
-            let _ = cache::store(&state);
-        }
+        // Only print output when state actually changes
+        let current_class = state.get_class();
+        let current_cycle_icon = config.get_cycle_icon(state.is_break()).to_string();
+        let current_running = state.running;
 
-        std::thread::sleep(SLEEP_DURATION);
+        let needs_print = pending_message
+            || pending_update
+            || current_class != last_class
+            || current_cycle_icon != last_cycle_icon
+            || current_running != last_running;
+
+        if needs_print {
+            let value = format_time(state.elapsed_time, state.get_current_time());
+            let value_prefix = config.get_play_pause_icon(state.running);
+            let tooltip = format!(
+                "{} pomodoro{} completed this session",
+                state.session_completed,
+                if state.session_completed > 1 || state.session_completed == 0 {
+                    "s"
+                } else {
+                    ""
+                }
+            );
+            println!(
+                "{}",
+                create_message(
+                    utils::helper::trim_whitespace(&format!(
+                        "{} {} {}",
+                        value_prefix, value, current_cycle_icon
+                    )),
+                    tooltip.as_str(),
+                    &current_class,
+                )
+            );
+
+            last_class = current_class;
+            last_cycle_icon = current_cycle_icon;
+            last_running = current_running;
+            pending_message = false;
+            pending_update = false;
+
+            if config.persist {
+                let _ = cache::store(&state);
+            }
+        }
     }
 }
 
